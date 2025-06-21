@@ -109,6 +109,12 @@ void interrupt_handler(struct interrupt_frame* frame) {
 
     if (frame->interrupt_number == 14) {
         print_page_fault_error_code(frame->error_code);
+        // Print PTE info for the faulting address
+        uint64_t cr2 = 0;
+        asm volatile ("mov %%cr2, %0" : "=r"(cr2));
+        extern void* get_current_pagemap();
+        extern void vmem_print_pte_info(void*, uint64_t);
+        vmem_print_pte_info(get_current_pagemap(), cr2);
     }
 
     while (true)

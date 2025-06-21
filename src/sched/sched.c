@@ -14,9 +14,9 @@
 #include <x86/apic.h>
 #include <x86/log.h>
 #include <rt/mutex.h>
+#include <rt/nanoprintf.h>
 #include <sys/stat.h>
 #include <vfs/vfs.h>
-#include <x86/io.h>
 
 #include "tls.h"
 
@@ -34,7 +34,8 @@ struct task kernel_process = {
     .start_time = 0,
     .parent_tid = -1, // no parent pid.
     .next = NULL,
-    .proc_mutex = {0}
+    .proc_mutex = {0},
+    .invocation = "/boot/kernel.elf"
 };
 
 struct task* processes_linked_list = &kernel_process;
@@ -61,7 +62,7 @@ void clock_handler(struct interrupt_frame* frame) {
         return;
     }
 
-    schedule(frame); // Call scheduler
+    schedule(frame);
 }
 
 struct task * get_kernel_process() {
@@ -218,8 +219,10 @@ struct task * get_current_process() {
 }
 
 struct task *create_user_process(const char *program, const char *args[],
-                                 const char *envp[]) {
+                                 const char *envp[], const char *invocation_string, int parent_tid, int priority) {
     pause_scheduler();
+
+    extern volatile bool test;
     // calculate the space needed for the argv and envp, calculate argc too
 
     int argc = 0;
@@ -241,10 +244,12 @@ struct task *create_user_process(const char *program, const char *args[],
     memset(task, 0, sizeof(struct task));
     task->tid = allocate_tid();
     task->is_thread = false; // i aint no thread cuh
-    task->priority = 10; // low prio
+    task->priority = priority;
     task->state = READY;
-    task->parent_tid = -1; // no parent.
+    task->parent_tid = parent_tid;
     task->proc_mutex.locked = 0; // initialize mutex
+
+    task->invocation = strdup(invocation_string);
 
     struct vmem_free_area* vmem_area = malloc(sizeof(struct vmem_free_area));
 
@@ -267,18 +272,22 @@ struct task *create_user_process(const char *program, const char *args[],
     task->frame.fs = (DATA_SEG_IDX * 0x8) | 3;
     task->frame.gs = (DATA_SEG_IDX * 0x8) | 3;
     task->frame.ss = (DATA_SEG_IDX * 0x8) | 3;
+    task->frame.rflags = 0x202; // rsvd + IF
 
     // paging setup
     uint64_t page_table_addr = page_alloc();
     uint64_t page_table_addr_virtual = page_table_addr + get_hhdm_slide();
+
     uint64_t page_table_flags = 0; // not used uwu
-    
+
+    memset((void*)(page_table_addr_virtual), 0, 4096);
+
     // copy higher 2048 bytes of the kernel page map to this page map.
     memcpy((void*)(page_table_addr + get_hhdm_slide() + 2048), (void*)((uintptr_t)get_kernel_pagemap() + 2048), 2048);
-    
+
     add_page_to_used_pages(task, page_table_addr);
 
-    uint64_t stack_size = 32 * 1024 * 1024;
+    uint64_t stack_size = 2 * 4096;
 
     // but first allocate the vmem within the task for the stack..
     uint64_t stack_vmem_start = allocate_virtual_memory_in_process(task, stack_size);
@@ -293,10 +302,10 @@ struct task *create_user_process(const char *program, const char *args[],
         add_page_to_used_pages(task, stack_page);
 
         // map it in using the task's page map.
-        vmem_map((void*)(page_table_addr_virtual), stack_vmem_start + page * 4096, stack_page, 4096, FLAG_RW | FLAG_US | FLAG_NX); // read write, user, no execute.
+        vmem_map((void*)(page_table_addr), stack_vmem_start + page * 4096, stack_page, 4096, FLAG_RW | FLAG_US | FLAG_NX); // read write, user, no execute.
     }
 
-    task->frame.orig_rsp = stack_vmem_end;
+    task->frame.orig_rsp = stack_vmem_end - 16;
 
     // load elf...
 
@@ -318,7 +327,7 @@ struct task *create_user_process(const char *program, const char *args[],
     // read the file into the buffer.
     read(elf_fd, elf_file, file_size);
 
-    task->frame.rip = load_elf(elf_file, (void*)(page_table_addr_virtual));
+    task->frame.rip = load_elf(elf_file, (void*)(page_table_addr));
 
     debug_print("RIP = %016lX\n", task->frame.rip);
 
@@ -484,4 +493,55 @@ void sched_init() {
 
     debug_print("Scheduling init done.\nRegistering timer handler.\n");
     set_lapic_secondary_timer_handler(clock_handler); // bam, sched me up babee
+}
+
+static void print_header() {
+    debug_print("%-*s|%-*s|%-*s|%-*s|%-*s|%-*s\n",
+                COL_WIDTH_TID, "TID",
+                COL_WIDTH_TYPE, "Type",
+                COL_WIDTH_PRIORITY, "Priority",
+                COL_WIDTH_STATE, "State",
+                COL_WIDTH_PARENT, "Parent",
+                COL_WIDTH_INVOCATION, "Command");
+
+    for (int i = 0; i < TOTAL_WIDTH; i++) {
+        debug_print("-");
+    }
+    debug_print("\n");
+}
+
+static void print_process(struct task *proc) {
+    const char *type = proc->is_thread ? "Thread" : "Process";
+    const char *state;
+    switch (proc->state) {
+        case READY: state = "Ready";
+            break;
+        case RUNNING: state = "Running";
+            break;
+        case BLOCKED: state = "Blocked";
+            break;
+        default: state = "Unknown";
+            break;
+    }
+
+    debug_print("%-*d|%-*s|%-*d|%-*s|%-*d|%-*s\n",
+                COL_WIDTH_TID, proc->tid,
+                COL_WIDTH_TYPE, type,
+                COL_WIDTH_PRIORITY, proc->priority,
+                COL_WIDTH_STATE, state,
+                COL_WIDTH_PARENT, proc->parent_tid,
+                COL_WIDTH_INVOCATION, proc->invocation ? proc->invocation : "<missing invocation command>");
+}
+
+void print_processes() {
+    disable_printing_time();
+    print_header();
+
+    struct task *current = processes_linked_list;
+    while (current != NULL) {
+        print_process(current);
+        current = current->next;
+    }
+
+    enable_printing_time();
 }

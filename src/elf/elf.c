@@ -9,22 +9,29 @@
 #include <mem/physical.h>
 #include <mem/virtual.h>
 #include <x86/log.h>
+#include <mem/virtual.h>
 
 uint64_t load_elf(void* elf_file, void* pagemap) {
-    Elf64_Ehdr* hdr = (Elf64_Ehdr*)elf_file;
+    void *old_pagemap = get_current_pagemap();
+    load_pagemap(pagemap);
+
+    Elf64_Ehdr *hdr = (Elf64_Ehdr *) elf_file;
 
     if (hdr->e_machine != EM_X86_64) {
         debug_print("Invalid machine type: %u\n", hdr->e_machine);
+        load_pagemap(old_pagemap);
         return 0;
     }
 
     if (hdr->e_type != ET_EXEC) {
         debug_print("Not an executable ELF\n");
+        load_pagemap(old_pagemap);
         return 0;
     }
 
     if (hdr->e_version != EV_CURRENT) {
         debug_print("Unsupported ELF version: %u\n", hdr->e_version);
+        load_pagemap(old_pagemap);
         return 0;
     }
 
@@ -91,5 +98,6 @@ uint64_t load_elf(void* elf_file, void* pagemap) {
         }
     }
 
+    load_pagemap(old_pagemap);
     return start_address;
 }

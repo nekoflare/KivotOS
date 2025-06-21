@@ -12,6 +12,14 @@
 #define CODE_SEG_IDX 3
 #define DATA_SEG_IDX 4
 
+#define COL_WIDTH_TID 6
+#define COL_WIDTH_TYPE 8
+#define COL_WIDTH_PRIORITY 10
+#define COL_WIDTH_STATE 8
+#define COL_WIDTH_PARENT 8
+#define COL_WIDTH_INVOCATION 60
+#define TOTAL_WIDTH (COL_WIDTH_TID + COL_WIDTH_TYPE + COL_WIDTH_PRIORITY + COL_WIDTH_STATE + COL_WIDTH_PARENT + COL_WIDTH_INVOCATION + 6)
+
 enum state {
     READY,
     RUNNING,
@@ -45,6 +53,7 @@ struct task {
 
     struct task* next;
     struct mutex proc_mutex; // per-process mutex for multicore safety
+    char *invocation; // full invocation string (program + args)
 };
 
 extern struct task *current_process;
@@ -58,11 +67,13 @@ void add_page_to_used_pages(struct task* task, uint64_t page_address);
 void remove_used_page_from_process(struct task* task, uint64_t page_address);
 
 struct task *create_user_process(const char *program, const char *args[],
-                                 const char *envp[]);
+                                 const char *envp[], const char *invocation_string, int parent_tid, int priority);
 void pause_scheduler();
 void unpause_scheduler();
 void schedule(struct interrupt_frame* frame);
 struct task* get_kernel_process();
 void sched_init();
+
+void print_processes();
 
 #endif //SCHED_H

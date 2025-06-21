@@ -26,5 +26,5 @@ _start:
 
 section .bss
     stack_top:
-        resb 1024 * 1024 ; reserve 1MB of stack.
+        resb 8 * 1024 * 1024 ; reserve 1MB of stack.
     stack_bottom:

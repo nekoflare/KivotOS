@@ -84,12 +84,23 @@ void vmem_free_memory(uint64_t address, uint64_t len) {
 void* get_current_pagemap() {
     uint64_t cr3 = 0;
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
-    return (void*) ((cr3 & 0xfffffffffffff000) + get_hhdm_slide());
+    return (void*) ((cr3 & 0xfffffffffffff000));
+}
+
+void load_pagemap(void* pm) {
+    uint64_t cr3 = 0;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3));
+    cr3 &= 0xfff; // get rid of everything **but** flags.
+    cr3 |= (uint64_t) (pm); // time to lock in
+    debug_print("Setting CR3 to 0x%016lX\n", cr3);
+    asm volatile("mov %0, %%cr3" :: "r"(cr3));
 }
 
 void map_page(void* pagemap, uint64_t virt, uint64_t phys, uint64_t flags) {
     if (pagemap == NULL) {
-        pagemap = get_current_pagemap();
+        pagemap = (void*)((uintptr_t)get_current_pagemap() + get_hhdm_slide());
+    } else {
+        pagemap = (void*)((uintptr_t)pagemap + get_hhdm_slide());
     }
 
     uintptr_t hhdm = get_hhdm_slide();
@@ -162,6 +173,13 @@ void map_page(void* pagemap, uint64_t virt, uint64_t phys, uint64_t flags) {
     pt_table = (struct pt*)((pd_table[vaddr.pd].pt_ppn << 12) + hhdm);
     entry = &pt_table[vaddr.pt];
 
+    // Check if already mapped
+    if (entry->p) {
+        debug_print("[map_page] ERROR: Attempt to map over existing PTE for virt=0x%016lX (phys=0x%016lX, old phys=0x%016lX)\n", virt, phys, (uint64_t)entry->phys_ppn << 12);
+        asm volatile ("cli; hlt");
+        return;
+    }
+
     // Write PTE
     entry->phys_ppn = phys >> 12;
     entry->p = 1;
@@ -174,7 +192,6 @@ void map_page(void* pagemap, uint64_t virt, uint64_t phys, uint64_t flags) {
 
     asm volatile("invlpg (%0)" :: "r"(virt) : "memory");
 }
-
 
 
 void vmem_map(void* pagemap, uint64_t virt, uint64_t phys, uint64_t len, uint64_t flags) {
@@ -220,6 +237,7 @@ void unmap_page(void *pagemap, uint64_t virt) {
     struct pt *entry = &pt_table[vaddr.pt];
 
     memset(entry, 0, sizeof(struct pt));
+    
     asm volatile("invlpg (%0)" :: "r"(virt) : "memory");
 }
 
@@ -242,3 +260,74 @@ void vmem_unmap(void *pagemap, uint64_t virt, uint64_t len) {
 void *get_kernel_pagemap() {
     return kernel_pagemap;
 }
+
+void vmem_print_pte_info(void* pagemap, uint64_t vaddr) {
+    if (pagemap == NULL) {
+        pagemap = get_current_pagemap();
+    }
+    uintptr_t hhdm = get_hhdm_slide();
+    struct virtual_address va = split_virtual_address_to_structure(vaddr);
+    struct pml4 *pml4_table = (struct pml4 *)pagemap;
+    struct pdp *pdp_table;
+    struct pd *pd_table;
+    struct pt *pt_table;
+    debug_print("\n--- vmem_print_pte_info ---\n");
+    debug_print("Virtual address: 0x%016lX\n", vaddr);
+    uint64_t pml4e = *((uint64_t*)&pml4_table[va.pml4]);
+    debug_print("PML4[%lu] @ %p: 0x%016lX\n", va.pml4, &pml4_table[va.pml4], pml4e);
+    debug_print("  Flags: %s%s%s%s%s%s%s%s\n",
+        pml4_table[va.pml4].p ? "P " : "",
+        pml4_table[va.pml4].rw ? "RW " : "",
+        pml4_table[va.pml4].us ? "US " : "",
+        pml4_table[va.pml4].pwt ? "PWT " : "",
+        pml4_table[va.pml4].pcd ? "PCD " : "",
+        pml4_table[va.pml4].nx ? "NX " : "",
+        pml4_table[va.pml4].a ? "A " : "",
+        "");
+    if (!pml4_table[va.pml4].p) return;
+    pdp_table = (struct pdp *)((pml4_table[va.pml4].pdp_ppn << 12) + hhdm);
+    uint64_t pdpe = *((uint64_t*)&pdp_table[va.pdp]);
+    debug_print("PDP [%lu] @ %p: 0x%016lX\n", va.pdp, &pdp_table[va.pdp], pdpe);
+    debug_print("  Flags: %s%s%s%s%s%s%s%s\n",
+        pdp_table[va.pdp].p ? "P " : "",
+        pdp_table[va.pdp].rw ? "RW " : "",
+        pdp_table[va.pdp].us ? "US " : "",
+        pdp_table[va.pdp].pwt ? "PWT " : "",
+        pdp_table[va.pdp].pcd ? "PCD " : "",
+        pdp_table[va.pdp].nx ? "NX " : "",
+        pdp_table[va.pdp].a ? "A " : "",
+        "");
+    if (!pdp_table[va.pdp].p) return;
+    pd_table = (struct pd *)((pdp_table[va.pdp].pd_ppn << 12) + hhdm);
+    uint64_t pde = *((uint64_t*)&pd_table[va.pd]);
+    debug_print("PD  [%lu] @ %p: 0x%016lX\n", va.pd, &pd_table[va.pd], pde);
+    debug_print("  Flags: %s%s%s%s%s%s%s%s\n",
+        pd_table[va.pd].p ? "P " : "",
+        pd_table[va.pd].rw ? "RW " : "",
+        pd_table[va.pd].us ? "US " : "",
+        pd_table[va.pd].pwt ? "PWT " : "",
+        pd_table[va.pd].pcd ? "PCD " : "",
+        pd_table[va.pd].nx ? "NX " : "",
+        pd_table[va.pd].a ? "A " : "",
+        "");
+    if (!pd_table[va.pd].p) return;
+    pt_table = (struct pt *)((pd_table[va.pd].pt_ppn << 12) + hhdm);
+    uint64_t pte = *((uint64_t*)&pt_table[va.pt]);
+    debug_print("PT  [%lu] @ %p: 0x%016lX\n", va.pt, &pt_table[va.pt], pte);
+    debug_print("  Flags: %s%s%s%s%s%s%s%s%s%s%s%s%s\n",
+        pt_table[va.pt].p ? "P " : "",
+        pt_table[va.pt].rw ? "RW " : "",
+        pt_table[va.pt].us ? "US " : "",
+        pt_table[va.pt].pwt ? "PWT " : "",
+        pt_table[va.pt].pcd ? "PCD " : "",
+        pt_table[va.pt].a ? "A " : "",
+        pt_table[va.pt].d ? "D " : "",
+        pt_table[va.pt].pat ? "PAT " : "",
+        pt_table[va.pt].g ? "G " : "",
+        pt_table[va.pt].nx ? "NX " : "",
+        pt_table[va.pt].pk ? "PK " : "",
+        "",
+        "");
+    debug_print("--------------------------\n");
+}
+

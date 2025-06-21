@@ -102,5 +102,8 @@ void vmem_map(void* pagemap, uint64_t virt, uint64_t phys, uint64_t len, uint64_
 void vmem_unmap(void* pagemap, uint64_t virt, uint64_t len);
 void unmap_page(void *pagemap, uint64_t virt);
 void* get_kernel_pagemap();
+void* get_current_pagemap();
+void load_pagemap(void* pm);
+void vmem_print_pte_info(void* pagemap, uint64_t vaddr);
 
 #endif //VIRTUAL_H

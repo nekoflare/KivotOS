@@ -17,10 +17,16 @@
 #include <stdarg.h>
 #include <rt/nanoprintf.h>
 
+static bool printing_time = true;
+
 void debug_log(const char *s) {
     char buffer[1024];
-    npf_snprintf(buffer, sizeof(buffer), "[%.6f] %s",
-                 (float) get_time_since_boot() / 1000000000.0f, s);
+    if (printing_time) {
+        npf_snprintf(buffer, sizeof(buffer), "[%.6f] %s",
+                     (float) get_time_since_boot() / 1000000000.0f, s);
+    } else {
+        npf_snprintf(buffer, sizeof(buffer), "%s", s);
+    }
     const char *p = buffer;
     while (*p) {
         outb(0xe9, *p);
@@ -37,8 +43,12 @@ void debug_print(const char *fmt, ...) {
     temp[written] = '\0';
 
     char buffer[1024];
-    npf_snprintf(buffer, sizeof(buffer), "[%.6f] %s",
-                 (float) get_time_since_boot() / 1000000000.0f, temp);
+    if (printing_time) {
+        npf_snprintf(buffer, sizeof(buffer), "[%.6f] %s",
+                     (float) get_time_since_boot() / 1000000000.0f, temp);
+    } else {
+        npf_snprintf(buffer, sizeof(buffer), "%s", temp);
+    }
     const char *p = buffer;
     while (*p) {
         outb(0xe9, *p);
@@ -46,4 +56,12 @@ void debug_print(const char *fmt, ...) {
     }
 
     va_end(args);
+}
+
+void enable_printing_time() {
+    printing_time = true;
+}
+
+void disable_printing_time() {
+    printing_time = false;
 }
