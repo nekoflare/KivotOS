@@ -1,0 +1,9 @@
+build/
+ovmf/
+limine/
+
+!mlibc/build.sh
+!mlibc/meson_options.txt
+!mlibc/kivotos-cross.txt
+!mlibc/sysdeps/
+!mlibc/sysdeps/kivotos/
