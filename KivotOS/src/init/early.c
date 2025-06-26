@@ -58,6 +58,8 @@ void kernel_start() {
     debug_print("Current TID: %d Current priority: %d\n", current_tid, current_priority);
 
     create_user_process("/init", NULL, NULL, "/init", current_tid, current_priority);
+    create_user_process("/init", NULL, NULL, "/init", current_tid, current_priority);
+    create_user_process("/init", NULL, NULL, "/init", current_tid, current_priority);
 
     // time to print processes :3
     print_processes();
