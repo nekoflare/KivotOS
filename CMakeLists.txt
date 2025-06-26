@@ -3,6 +3,8 @@ cmake_minimum_required(VERSION 3.10)
 project(KivotOS VERSION 1.0 LANGUAGES C CXX ASM)
 enable_language(ASM_NASM)
 
+set(ENABLE_FUNCTION_INSTRUMENTING false)
+
 # Compiler configuration
 # set(CMAKE_C_COMPILER /usr/bin/x86_64-linux-gnu-gcc-11)
 # set(CMAKE_CXX_COMPILER /usr/bin/x86_64-linux-gnu-g++-11)
@@ -11,8 +13,14 @@ set(CMAKE_ASM_NASM_COMPILER /usr/bin/nasm)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+set(UBSAN_FLAGS "-fsanitize=undefined -fsanitize=alignment -fsanitize=bool -fsanitize=bounds -fsanitize=builtin -fsanitize=enum -fsanitize=float-cast-overflow -fsanitize=float-divide-by-zero -fsanitize=integer-divide-by-zero -fsanitize=null -fsanitize=object-size -fsanitize=pointer-overflow -fsanitize=return -fsanitize=shift -fsanitize=signed-integer-overflow -fsanitize=unreachable -fsanitize=vla-bound -fsanitize=vptr")
+
 # Common compiler flags
-set(COMMON_FLAGS "-fno-builtin -fno-stack-protector -fno-stack-check -fno-plt -fno-pic -ffreestanding -mcmodel=kernel -march=x86-64 -m64 -mno-red-zone -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -Wall -Wextra -Wformat -Wformat-security -Wall -Wextra -Wshadow -Wstrict-prototypes -fno-strict-aliasing -O2 -g")
+set(COMMON_FLAGS "${UBSAN_FLAGS} -fno-builtin -fno-stack-protector -fno-stack-check -fno-plt -fno-pic -ffreestanding -mcmodel=kernel -march=x86-64 -m64 -mno-red-zone -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0 -Wall -Wextra -Wformat -Wformat-security -Wall -Wextra -Wshadow -Wstrict-prototypes -fno-strict-aliasing -O2 -g")
+
+if (ENABLE_FUNCTION_INSTRUMENTING)
+    set(COMMON_FLAGS "${COMMON_FLAGS} -finstrument-functions")
+endif ()
 
 # C flags
 set(CMAKE_C_FLAGS "${COMMON_FLAGS} -lgcc -static -msse -mmmx -msse2")
@@ -72,16 +80,48 @@ add_executable(KivotOS
         src/acpi/uacpi_glue.c
         src/acpi/uacpi_io.c
         src/sched/sched.c
+        src/syscalls/syscalls.h
+        src/syscalls/syscall_system.c
+        src/syscalls/syscall_system.h
+        src/syscalls/syscall_handler.asm
+        src/sched/tls.c
+        src/rt/instrumenting.c
+        src/rt/instrumenting.h
+        src/rt/kallsyms.c
+        src/rt/kallsyms.h
+        src/rt/mutex.h
+        src/sched/sched.h
+        src/x86/interrupts_helpers.h
+        src/rt/ubsan.c
+        src/syscalls/syscalls/write.c
 )
 
-# Post-build: rename ELF, call iso.sh
+
+file(GLOB APP_DIRS "../apps/*")
+
+add_custom_target(CompileApps
+        COMMENT "Compiling applications in apps directory"
+)
+
+foreach (APP_DIR ${APP_DIRS})
+    if (IS_DIRECTORY ${APP_DIR})
+        get_filename_component(APP_NAME ${APP_DIR} NAME)
+        add_custom_command(
+                TARGET CompileApps
+                COMMAND sh compile.sh
+                WORKING_DIRECTORY ${APP_DIR}
+                COMMENT "Compiling ${APP_NAME}"
+        )
+    endif ()
+endforeach ()
+
 add_custom_target(PostBuild ALL
-    COMMAND ${CMAKE_COMMAND} -E rename KivotOS kernel.elf
-    COMMAND chmod +x ../iso.sh
-    COMMAND ../iso.sh
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "Post-build: Renaming KivotOS to kernel.elf and invoking iso.sh"
-    DEPENDS KivotOS
+        COMMAND ${CMAKE_COMMAND} -E rename KivotOS kernel.elf
+        COMMAND chmod +x ../iso.sh
+        COMMAND ../iso.sh
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        COMMENT "Post-build: Renaming KivotOS to kernel.elf and invoking iso.sh"
+        DEPENDS KivotOS CompileApps
 )
 
 # Launch QEMU

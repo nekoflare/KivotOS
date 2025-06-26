@@ -11,6 +11,8 @@
 #include <x86/log.h>
 #include <mem/virtual.h>
 
+#define PAGE_SIZE 4096
+
 uint64_t load_elf(void* elf_file, void* pagemap) {
     void *old_pagemap = get_current_pagemap();
     load_pagemap(pagemap);
@@ -65,34 +67,32 @@ uint64_t load_elf(void* elf_file, void* pagemap) {
         Elf64_Phdr* phdr = (Elf64_Phdr*)((uint8_t*)elf_file + phoff + i * phentsize);
 
         if (phdr->p_type == PT_LOAD) {
-            Elf64_Addr vaddr = phdr->p_vaddr;
-            Elf64_Off offset = phdr->p_offset;
-            Elf64_Xword filesz = phdr->p_filesz;
-            Elf64_Xword memsz = phdr->p_memsz;
+            Elf64_Addr aligned_vaddr = ALIGN_DOWN(phdr->p_vaddr, PAGE_SIZE);
+            Elf64_Off aligned_offset = ALIGN_DOWN(phdr->p_offset, PAGE_SIZE);
+            uint64_t vaddr_offset = phdr->p_vaddr - aligned_vaddr;
+            Elf64_Xword total_memsz = ALIGN_UP(vaddr_offset + phdr->p_memsz, PAGE_SIZE);
+            Elf64_Xword total_filesz = vaddr_offset + phdr->p_filesz;
 
-            Elf64_Xword aligned_memsz = ALIGN_UP(memsz, 4096);
+            for (uint64_t pg = 0; pg * PAGE_SIZE < total_memsz; pg++) {
+                uint64_t page = allocate_physical_page();
+                vmem_map(pagemap, aligned_vaddr + pg * PAGE_SIZE, page, PAGE_SIZE, FLAG_RW | FLAG_US);
 
-            for (uint64_t pg = 0; pg * 4096 < aligned_memsz; pg++) {
-                uint64_t page = page_alloc();
-                vmem_map(pagemap, vaddr + pg * 4096, page, 4096, FLAG_RW | FLAG_US);
+                void* dst = (void*)(aligned_vaddr + pg * PAGE_SIZE);
+                uint64_t page_offset = pg * PAGE_SIZE;
 
-                void* dst = (void*)(vaddr + pg * 4096);
-                uint64_t page_offset = pg * 4096;
-                uint64_t copy_size = 4096;
-
-                if (page_offset + 4096 > filesz) {
-                    if (page_offset >= filesz) {
+                if (page_offset + PAGE_SIZE > total_filesz) {
+                    if (page_offset >= total_filesz) {
                         // entirely beyond file contents — zero it
-                        memset(dst, 0, 4096);
+                        memset(dst, 0, PAGE_SIZE);
                     } else {
                         // partial overlap — copy part, zero the rest
-                        copy_size = filesz - page_offset;
-                        memcpy(dst, (uint8_t*)elf_file + offset + page_offset, copy_size);
-                        memset((uint8_t*)dst + copy_size, 0, 4096 - copy_size);
+                        uint64_t copy_size = total_filesz - page_offset;
+                        memcpy(dst, (uint8_t*)elf_file + aligned_offset + page_offset, copy_size);
+                        memset((uint8_t*)dst + copy_size, 0, PAGE_SIZE - copy_size);
                     }
                 } else {
                     // fully within file data
-                    memcpy(dst, (uint8_t*)elf_file + offset + page_offset, 4096);
+                    memcpy(dst, (uint8_t*)elf_file + aligned_offset + page_offset, PAGE_SIZE);
                 }
             }
         }

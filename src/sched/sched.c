@@ -275,7 +275,7 @@ struct task *create_user_process(const char *program, const char *args[],
     task->frame.rflags = 0x202; // rsvd + IF
 
     // paging setup
-    uint64_t page_table_addr = page_alloc();
+    uint64_t page_table_addr = allocate_physical_page();
     uint64_t page_table_addr_virtual = page_table_addr + get_hhdm_slide();
 
     uint64_t page_table_flags = 0; // not used uwu
@@ -297,7 +297,7 @@ struct task *create_user_process(const char *program, const char *args[],
 
     // now allocate pages and map them in.
     for (int page = 0; stack_size / 4096 > page; page++) {
-        uint64_t stack_page = page_alloc();
+        uint64_t stack_page = allocate_physical_page();
         // add to the used pages
         add_page_to_used_pages(task, stack_page);
 
@@ -306,6 +306,7 @@ struct task *create_user_process(const char *program, const char *args[],
     }
 
     task->frame.orig_rsp = stack_vmem_end - 16;
+    task->frame.rbp = task->frame.orig_rsp;
 
     // load elf...
 
@@ -444,7 +445,6 @@ void schedule(struct interrupt_frame *frame) {
         current_process->pagemap = (void *) cr3;
     }
 
-
     // Find next ready process (round-robin)
     struct task* next = current_process->next;
     while (1) {
@@ -493,6 +493,60 @@ void sched_init() {
 
     debug_print("Scheduling init done.\nRegistering timer handler.\n");
     set_lapic_secondary_timer_handler(clock_handler); // bam, sched me up babee
+}
+
+void scheduler_kill_process(struct interrupt_frame *frame, struct task *task) {
+    lock_mutex(&sched_mutex);
+    pause_scheduler();
+
+    // Find process from process list
+    struct task *current = processes_linked_list;
+    struct task *prev = NULL;
+
+    while (current != NULL) {
+        if (current == task) {
+            if (prev) {
+                prev->next = current->next;
+            } else {
+                processes_linked_list = current->next;
+            }
+            break;
+        }
+        prev = current;
+        current = current->next;
+    }
+
+    // Free memory used by the process
+    struct proc_used_physical_memory *page = task->
+            proc_used_physical_memory_head;
+    while (page != NULL) {
+        struct proc_used_physical_memory *next = page->next;
+        deallocate_physical_page(page->start);
+        free(page);
+        page = next;
+    }
+
+    // Free virtual memory areas
+    struct vmem_free_area *area = task->vmem_freelist_head;
+    while (area != NULL) {
+        struct vmem_free_area *next = area->next;
+        free(area);
+        area = next;
+    }
+
+    if (task->invocation) {
+        free(task->invocation);
+    }
+
+    // Free the task structure itself
+    free(task);
+    processes--;
+
+    // Reschedule
+    schedule(frame);
+
+    unpause_scheduler();
+    unlock_mutex(&sched_mutex);
 }
 
 static void print_header() {

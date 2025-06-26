@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 #include <limine.h>
+#include <stdbool.h>
 #include <stddef.h>
 
 struct virtual_address
@@ -105,5 +106,7 @@ void* get_kernel_pagemap();
 void* get_current_pagemap();
 void load_pagemap(void* pm);
 void vmem_print_pte_info(void* pagemap, uint64_t vaddr);
+
+bool is_rw(void *addr);
 
 #endif //VIRTUAL_H

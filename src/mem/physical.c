@@ -14,10 +14,15 @@ volatile struct limine_memmap_request memmap_request = {
     .response = NULL
 };
 
-struct mutex pmem_freelist_entry_mutex = {};
-struct pmem_freelist_entry* head = NULL;
+struct free_list_entry_t {
+    struct free_list_entry_t* next;
+    uint64_t length;
+};
 
-void pmem_push_to_freelist(struct pmem_freelist_entry* entry) {
+struct mutex pmem_freelist_entry_mutex = {};
+struct free_list_entry_t* head = NULL;
+
+void push_physical_memory_area_to_free_list(struct free_list_entry_t* entry) {
     lock_mutex(&pmem_freelist_entry_mutex);
     if (head == NULL) {
         head = entry;
@@ -30,7 +35,7 @@ void pmem_push_to_freelist(struct pmem_freelist_entry* entry) {
     unlock_mutex(&pmem_freelist_entry_mutex);
 }
 
-const char* pmem_limine_memmap_type_to_string(uint64_t t) {
+const char* limine_memory_map_type_to_string(uint64_t t) {
     switch (t) {
         case LIMINE_MEMMAP_USABLE: return "Usable";
         case LIMINE_MEMMAP_RESERVED: return "Reserved";
@@ -44,13 +49,13 @@ const char* pmem_limine_memmap_type_to_string(uint64_t t) {
     }
 }
 
-void pmem_print_memmap_entry(struct limine_memmap_entry* e) {
-    debug_print("Memory map entry | Base: %016llX Length: %08lu (B) Type: %s\n", e->base, e->length, pmem_limine_memmap_type_to_string(e->type));
+void print_limine_memory_map_entry(struct limine_memmap_entry* e) {
+    debug_print("Memory map entry | Base: %016llX Length: %08lu (B) Type: %s\n", e->base, e->length, limine_memory_map_type_to_string(e->type));
 }
 
-void pmem_count_free_memory_and_print() {
+void print_free_physical_memory() {
     lock_mutex(&pmem_freelist_entry_mutex);
-    struct pmem_freelist_entry* entry = head;
+    struct free_list_entry_t* entry = head;
     size_t free_mem = 0;
 
     while (entry) {
@@ -64,7 +69,7 @@ void pmem_count_free_memory_and_print() {
 
 void pmem_print_freelist() {
     lock_mutex(&pmem_freelist_entry_mutex);
-    struct pmem_freelist_entry *entry = head;
+    struct free_list_entry_t *entry = head;
     debug_print("Physical memory freelist:\n");
 
     while (entry) {
@@ -75,7 +80,7 @@ void pmem_print_freelist() {
     unlock_mutex(&pmem_freelist_entry_mutex);
 }
 
-void pmem_init() {
+void physical_memory_init() {
     if (memmap_request.response == NULL) {
         debug_print("No memory map.\n");
         asm volatile ("cli; hlt");
@@ -87,30 +92,31 @@ void pmem_init() {
     for (uint64_t i = 0; i < entry_count; i++) {
         struct limine_memmap_entry* entry = entries[i];
 
-        pmem_print_memmap_entry(entry);
+        print_limine_memory_map_entry(entry);
 
         if (entry->type == LIMINE_MEMMAP_USABLE) {
             // add it to the freelist.
-            struct pmem_freelist_entry* ent = (struct pmem_freelist_entry*)(get_hhdm_slide() + entry->base);
+            struct free_list_entry_t* ent = (struct free_list_entry_t*)(get_hhdm_slide() + entry->base);
             ent->length = entry->length;
             ent->next = NULL;
 
-            pmem_push_to_freelist(ent);
+            push_physical_memory_area_to_free_list(ent);
         }
     }
 
-    pmem_count_free_memory_and_print();
+    print_free_physical_memory();
     pmem_print_freelist();
 }
 
-uint64_t page_alloc() {
+uint64_t allocate_physical_page() {
     lock_mutex(&pmem_freelist_entry_mutex);
+
     if (head == NULL || head->length < 4096) {
         unlock_mutex(&pmem_freelist_entry_mutex);
         return 0;
     }
 
-    struct pmem_freelist_entry* this = head;
+    struct free_list_entry_t* this = head;
     uint64_t addr = (uint64_t)this - get_hhdm_slide(); // physical address to return
 
     if (head->length == 4096) {
@@ -118,7 +124,7 @@ uint64_t page_alloc() {
         head = head->next;
     } else {
         // shrink current freelist entry
-        head = (struct pmem_freelist_entry*)((char*)this + 4096);
+        head = (struct free_list_entry_t*)((char*)this + 4096);
         head->length = this->length - 4096;
         head->next = this->next;
     }
@@ -126,10 +132,10 @@ uint64_t page_alloc() {
     return addr;
 }
 
-void page_dealloc(uint64_t page) {
+void deallocate_physical_page(uint64_t page) {
     if (page == 0) return; // invalid page
 
-    struct pmem_freelist_entry* entry = (struct pmem_freelist_entry*)(page + get_hhdm_slide());
+    struct free_list_entry_t* entry = (struct free_list_entry_t*)(page + get_hhdm_slide());
     entry->length = 4096;
     entry->next = NULL;
 
@@ -141,8 +147,8 @@ void page_dealloc(uint64_t page) {
         return;
     }
 
-    struct pmem_freelist_entry* prev = NULL;
-    struct pmem_freelist_entry* current = head;
+    struct free_list_entry_t* prev = NULL;
+    struct free_list_entry_t* current = head;
 
     while (current && current < entry) {
         prev = current;
@@ -174,7 +180,9 @@ void page_dealloc(uint64_t page) {
     unlock_mutex(&pmem_freelist_entry_mutex);
 }
 
-uint64_t pmem_get_highest_address() {
+uint64_t get_highest_valid_physical_address() {
+    lock_mutex(&pmem_freelist_entry_mutex);
+
     if (memmap_request.response == NULL) {
         debug_print("No memory map.\n");
         asm volatile ("cli; hlt");
@@ -193,17 +201,18 @@ uint64_t pmem_get_highest_address() {
         }
     }
 
+    unlock_mutex(&pmem_freelist_entry_mutex);
     return highest_address;
 }
 
-uint64_t page_alloc_pages(size_t count) {
+uint64_t allocate_physical_pages(size_t count) {
+    lock_mutex(&pmem_freelist_entry_mutex);
+
     if (count == 0) return 0;
     size_t needed_bytes = count * 4096;
 
-    lock_mutex(&pmem_freelist_entry_mutex);
-
-    struct pmem_freelist_entry* prev = NULL;
-    struct pmem_freelist_entry* current = head;
+    struct free_list_entry_t* prev = NULL;
+    struct free_list_entry_t* current = head;
 
     while (current) {
         if (current->length >= needed_bytes) {
@@ -215,12 +224,12 @@ uint64_t page_alloc_pages(size_t count) {
                 else head = current->next;
             } else {
                 // save old next pointer before splitting
-                struct pmem_freelist_entry* old_next = current->next;
+                struct free_list_entry_t* old_next = current->next;
                 size_t old_length = current->length;
 
                 // create new block after allocated region
-                struct pmem_freelist_entry* new_block =
-                    (struct pmem_freelist_entry*)((uint64_t)current + needed_bytes);
+                struct free_list_entry_t* new_block =
+                    (struct free_list_entry_t*)((uint64_t)current + needed_bytes);
                 new_block->length = old_length - needed_bytes;
                 new_block->next = old_next;
 
@@ -238,14 +247,14 @@ uint64_t page_alloc_pages(size_t count) {
     return 0; // no suitable block found :((((
 }
 
-void page_dealloc_pages(uint64_t start_page, size_t count) {
+void deallocate_physical_pages(uint64_t start_page, size_t count) {
+    lock_mutex(&pmem_freelist_entry_mutex);
+
     if (count == 0 || start_page == 0) return;
 
-    struct pmem_freelist_entry* entry = (struct pmem_freelist_entry*)(start_page + get_hhdm_slide());
+    struct free_list_entry_t* entry = (struct free_list_entry_t*)(start_page + get_hhdm_slide());
     entry->length = count * 4096;
     entry->next = NULL;
-
-    lock_mutex(&pmem_freelist_entry_mutex);
 
     if (head == NULL) {
         head = entry;
@@ -254,8 +263,8 @@ void page_dealloc_pages(uint64_t start_page, size_t count) {
     }
 
     // insert into freelist sorted by address
-    struct pmem_freelist_entry* prev = NULL;
-    struct pmem_freelist_entry* current = head;
+    struct free_list_entry_t* prev = NULL;
+    struct free_list_entry_t* current = head;
 
     while (current && current < entry) {
         prev = current;
@@ -285,9 +294,9 @@ void page_dealloc_pages(uint64_t start_page, size_t count) {
     unlock_mutex(&pmem_freelist_entry_mutex);
 }
 
-uint64_t pmem_get_usable_memory_count() {
+uint64_t get_physical_usable_memory_count() {
     lock_mutex(&pmem_freelist_entry_mutex);
-    struct pmem_freelist_entry* entry = head;
+    struct free_list_entry_t* entry = head;
     size_t free_mem = 0;
 
     while (entry) {

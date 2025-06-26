@@ -45,7 +45,7 @@ struct virtual_address split_virtual_address_to_structure(const uint64_t address
 
 void vmem_init() {
     lock_mutex(&vmem_mutex);
-    vmem_bottom = get_hhdm_slide() + pmem_get_highest_address();
+    vmem_bottom = get_hhdm_slide() + get_highest_valid_physical_address();
     vmem_left = ea_request.response->virtual_base - vmem_bottom;
 
     uint64_t cr3 = 0;
@@ -123,7 +123,7 @@ void map_page(void* pagemap, uint64_t virt, uint64_t phys, uint64_t flags) {
 
     // Allocate PDP if needed
     if (pml4_table[vaddr.pml4].pdp_ppn == 0) {
-        uint64_t pdp_phys = page_alloc();
+        uint64_t pdp_phys = allocate_physical_page();
         if (!pdp_phys) {
             return;
         }
@@ -140,7 +140,7 @@ void map_page(void* pagemap, uint64_t virt, uint64_t phys, uint64_t flags) {
 
     // Allocate PD if needed
     if (pdp_table[vaddr.pdp].pd_ppn == 0) {
-        uint64_t pd_phys = page_alloc();
+        uint64_t pd_phys = allocate_physical_page();
         if (!pd_phys) {
             return;
         }
@@ -157,7 +157,7 @@ void map_page(void* pagemap, uint64_t virt, uint64_t phys, uint64_t flags) {
 
     // Allocate PT if needed
     if (pd_table[vaddr.pd].pt_ppn == 0) {
-        uint64_t pt_phys = page_alloc();
+        uint64_t pt_phys = allocate_physical_page();
         if (!pt_phys) {
             return;
         }
@@ -172,13 +172,6 @@ void map_page(void* pagemap, uint64_t virt, uint64_t phys, uint64_t flags) {
 
     pt_table = (struct pt*)((pd_table[vaddr.pd].pt_ppn << 12) + hhdm);
     entry = &pt_table[vaddr.pt];
-
-    // Check if already mapped
-    if (entry->p) {
-        debug_print("[map_page] ERROR: Attempt to map over existing PTE for virt=0x%016lX (phys=0x%016lX, old phys=0x%016lX)\n", virt, phys, (uint64_t)entry->phys_ppn << 12);
-        asm volatile ("cli; hlt");
-        return;
-    }
 
     // Write PTE
     entry->phys_ppn = phys >> 12;
@@ -263,7 +256,9 @@ void *get_kernel_pagemap() {
 
 void vmem_print_pte_info(void* pagemap, uint64_t vaddr) {
     if (pagemap == NULL) {
-        pagemap = get_current_pagemap();
+        pagemap = get_current_pagemap() + get_hhdm_slide();
+    } else {
+        pagemap += get_hhdm_slide();
     }
     uintptr_t hhdm = get_hhdm_slide();
     struct virtual_address va = split_virtual_address_to_structure(vaddr);
@@ -331,3 +326,26 @@ void vmem_print_pte_info(void* pagemap, uint64_t vaddr) {
     debug_print("--------------------------\n");
 }
 
+bool is_rw(void *addr) {
+    void *pagemap = (void *) ((uintptr_t) get_current_pagemap() +
+                              get_hhdm_slide());
+    uintptr_t hhdm = get_hhdm_slide();
+    struct virtual_address va = split_virtual_address_to_structure(
+        (uint64_t) addr);
+
+    struct pml4 *pml4_table = (struct pml4 *) pagemap;
+    if (!pml4_table[va.pml4].p) return false;
+
+    struct pdp *pdp_table = (struct pdp *) (
+        (pml4_table[va.pml4].pdp_ppn << 12) + hhdm);
+    if (!pdp_table[va.pdp].p) return false;
+
+    struct pd *pd_table = (struct pd *) (
+        (pdp_table[va.pdp].pd_ppn << 12) + hhdm);
+    if (!pd_table[va.pd].p) return false;
+
+    struct pt *pt_table = (struct pt *) ((pd_table[va.pd].pt_ppn << 12) + hhdm);
+    struct pt *entry = &pt_table[va.pt];
+
+    return entry->p && entry->rw;
+}

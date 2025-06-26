@@ -26,3 +26,13 @@ int fprintf (FILE *__restrict __stream,
     va_end(ap);
     return written;
 }
+
+int snprintf(char *__restrict __s, size_t __maxlen,
+             const char *__restrict __format, ...) {
+    va_list ap;
+    va_start(ap, __format);
+    const int written = npf_vsnprintf(__s, __maxlen, __format, ap);
+    va_end(ap);
+    return written;
+}
+

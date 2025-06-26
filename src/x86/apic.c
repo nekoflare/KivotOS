@@ -205,7 +205,7 @@ volatile uint32_t ticks_in_time = 0;
 volatile uint32_t lapic_ticks_per_ms = 0;
 volatile float ms_elapsed = 0;
 
-volatile float tick = 0.062f;
+volatile float tick = 10.0f;
 
 void(*secondary_lapic_timer_handler)(struct interrupt_frame*) = NULL;
 
@@ -280,8 +280,16 @@ void time_up_lapic() {
     pit_set_frequency(16130);
     register_interrupt_handler(0, true, pit_timer_handler);
 
-    asm volatile("sti");
+    asm volatile ("sti");
     pit_sleep((float)calibration_ms);
+    asm volatile ("cli");
+
+    unregister_interrupt_handler(0, false);
+
+    // fuck you pit
+    outb(0x43, 0b00110000); // binary, mode 0, access lo/hi, channel 0
+    outb(0x40, 0x00);       // LSB = 0
+    outb(0x40, 0x00);       // MSB = 0
 
     // Read LAPIC timer current count
     uint32_t elapsed = 0xFFFFFFFF - apic_read(get_lapic_address(), APIC_REGISTER_TIMER_CURRENT);
@@ -293,14 +301,15 @@ void time_up_lapic() {
     // mask timer and cleanup
     apic_write(get_lapic_address(), APIC_REGISTER_LVT_TIMER,
                APIC_LVT_INT_MASKED);
-    unregister_interrupt_handler(0, false);
 
     debug_log("Setting up periodic LAPIC timer\n");
 
-    // Set LAPIC timer to periodic mode, 1ms interval
-    apic_write(get_lapic_address(), APIC_REGISTER_LVT_TIMER, 255 | APIC_TIMER_MODE_PERIODIC);
+    // Set LAPIC timer to periodic mode, 10ms interval
+    apic_write(get_lapic_address(), APIC_REGISTER_LVT_TIMER,
+               255 | APIC_TIMER_MODE_PERIODIC);
     apic_write(get_lapic_address(), APIC_REGISTER_TIMER_DIVIDE, lapic_divisor);
-    apic_write(get_lapic_address(), APIC_REGISTER_TIMER_INITIAL, lapic_ticks_per_ms);
+    apic_write(get_lapic_address(), APIC_REGISTER_TIMER_INITIAL,
+               lapic_ticks_per_ms * 10);
 
     ms_elapsed = tick;
 }

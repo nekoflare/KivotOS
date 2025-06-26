@@ -1,5 +1,7 @@
 section .text
     global _start
+    global stack_top
+    global stack_bottom
     extern kernel_start
 
 enable_sse:

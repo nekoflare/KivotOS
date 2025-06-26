@@ -60,7 +60,9 @@ ISR_NOERRORCODE i
 
 global isr_common
 isr_common:
+    cli
     swapgs
+
     push rax
     push rbx
     push rcx

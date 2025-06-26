@@ -9,7 +9,7 @@
 #include <x86/idt.h>
 #include <rt/mutex.h>
 
-#define CODE_SEG_IDX 3
+#define CODE_SEG_IDX 5
 #define DATA_SEG_IDX 4
 
 #define COL_WIDTH_TID 6
@@ -73,6 +73,8 @@ void unpause_scheduler();
 void schedule(struct interrupt_frame* frame);
 struct task* get_kernel_process();
 void sched_init();
+
+void scheduler_kill_process(struct interrupt_frame* frame, struct task* task);
 
 void print_processes();
 

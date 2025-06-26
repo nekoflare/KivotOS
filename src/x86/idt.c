@@ -6,6 +6,9 @@
 
 #include <stddef.h>
 #include <stdlib.h>
+#include <mem/virtual.h>
+#include <rt/instrumenting.h>
+#include <sched/sched.h>
 
 #include "apic.h"
 #include "log.h"
@@ -66,25 +69,35 @@ void print_interrupt_frame(struct interrupt_frame* frame) {
     uint64_to_binary_str(frame->error_code, error_code_bin);
 
     debug_print("=== Register State ===\n");
-    debug_print("GS   = 0x%016lx  FS   = 0x%016lx  ES   = 0x%016lx  DS   = 0x%016lx\n",
+    debug_print("GS   = 0x%lX  FS   = 0x%lX  ES   = 0x%lX  DS   = 0x%lX\n",
               frame->gs, frame->fs, frame->es, frame->ds);
-    debug_print("R15  = 0x%016lx  R14  = 0x%016lx  R13  = 0x%016lx  R12  = 0x%016lx\n",
+    debug_print("R15  = 0x%lX  R14  = 0x%lX  R13  = 0x%lX  R12  = 0x%lX\n",
               frame->r15, frame->r14, frame->r13, frame->r12);
-    debug_print("R11  = 0x%016lx  R10  = 0x%016lx  R9   = 0x%016lx  R8   = 0x%016lx\n",
+    debug_print("R11  = 0x%lX  R10  = 0x%lX  R9   = 0x%lX  R8   = 0x%lX\n",
               frame->r11, frame->r10, frame->r9, frame->r8);
-    debug_print("RDI  = 0x%016lx  RSI  = 0x%016lx  RBP  = 0x%016lx \n",
+    debug_print("RDI  = 0x%lX  RSI  = 0x%lX  RBP  = 0x%lX \n",
               frame->rdi, frame->rsi, frame->rbp);
-    debug_print("RDX  = 0x%016lx  RCX  = 0x%016lx  RBX  = 0x%016lx  RAX  = 0x%016lx\n",
+    debug_print("RDX  = 0x%lX  RCX  = 0x%lX  RBX  = 0x%lX  RAX  = 0x%lX\n",
               frame->rdx, frame->rcx, frame->rbx, frame->rax);
-    debug_print("Interrupt Number = %lu  Error Code = %lu (%s) (%016lX)\n", frame->interrupt_number, frame->error_code, error_code_bin, frame->error_code);
-    debug_print("RIP  = 0x%016lx  CS   = 0x%016lx  RFLAGS = 0x%016lx\n",
+    debug_print("Interrupt Number = %lu  Error Code = %lu (%s) (%lX)\n", frame->interrupt_number, frame->error_code, error_code_bin, frame->error_code);
+    debug_print("RIP  = 0x%lX  CS   = 0x%lX  RFLAGS = 0x%lX\n",
               frame->rip, frame->cs, frame->rflags);
-    debug_print("ORIG_RSP = 0x%016lx  SS   = 0x%016lx\n",
+    debug_print("ORIG_RSP = 0x%lX  SS   = 0x%lX\n",
               frame->orig_rsp, frame->ss);
+}
+
+void check_ss(struct interrupt_frame* frame) {
+    if (frame->ss == 0x20) {
+        debug_print("wrong ss.\n");
+        frame->ss = 0x23;
+    }
 }
 
 void interrupt_handler(struct interrupt_frame* frame) {
     // lets see..
+    pause_logging_calls();
+
+   // if (frame->interrupt_number != 255 && frame->interrupt_number != 32) // if its not a timer and something else. easier to detect where it wants to return.
 
     if (frame->interrupt_number >= 32) {
         // good interrupt.
@@ -99,9 +112,29 @@ void interrupt_handler(struct interrupt_frame* frame) {
             entry = entry->next;
         }
 
+
+        resume_logging_calls();
         lapic_send_eoi();
 
+        if (frame->ss == 0x20) {
+            frame->ss = 0x23;
+        }
+
         return;
+    }
+
+    if ((frame->cs & 0x3) == 0x3) {
+        // its user and he crashed!
+
+        // here maybe cow but for now crashing..
+
+        debug_print("Segmentation fault ( core NOT dumped :) )\n");
+        debug_print("It died at -> %016lX\n", frame->rip);
+
+        scheduler_kill_process(frame, get_current_process()); // frame is used to reschedule for now. in the future we will use custom function to do that and not rely on idt.
+        // kill user process
+
+        return; // we're good :)
     }
 
     debug_print("Exception!\n");
@@ -112,10 +145,11 @@ void interrupt_handler(struct interrupt_frame* frame) {
         // Print PTE info for the faulting address
         uint64_t cr2 = 0;
         asm volatile ("mov %%cr2, %0" : "=r"(cr2));
-        extern void* get_current_pagemap();
-        extern void vmem_print_pte_info(void*, uint64_t);
         vmem_print_pte_info(get_current_pagemap(), cr2);
     }
+
+    print_call_log();
+    print_stack_and_heap_info(frame);
 
     while (true)
         asm volatile ("cli; hlt");

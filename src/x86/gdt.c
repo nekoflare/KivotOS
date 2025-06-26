@@ -6,7 +6,7 @@
 #include "log.h"
 
 // null, kern code, kern data, user code, user data, tsss..... :snake:
-struct gdt_entry gdt_entries[7] = {};
+struct gdt_entry gdt_entries[8] = {};
 struct tss tss;
 struct gdtr gdtr;
 
@@ -38,7 +38,7 @@ void gdt_init() {
         GDT_FLAG_G,
         GDT_ACC_P | GDT_ACC_S | GDT_ACC_RW | GDT_ACC_DPL(0));
 
-    // User code segment
+    // User code32 segment
     gdt_entries[3] = create_gdt_entry(0, 0xFFFFF,
         GDT_FLAG_LM | GDT_FLAG_G,
         GDT_ACC_P | GDT_ACC_S | GDT_ACC_X | GDT_ACC_RW | GDT_ACC_DPL(3));
@@ -47,6 +47,11 @@ void gdt_init() {
     gdt_entries[4] = create_gdt_entry(0, 0xFFFFF,
         GDT_FLAG_G,
         GDT_ACC_P | GDT_ACC_S | GDT_ACC_RW | GDT_ACC_DPL(3));
+
+    // User code64 segment
+    gdt_entries[5] = create_gdt_entry(0, 0xFFFFF,
+        GDT_FLAG_LM | GDT_FLAG_G,
+        GDT_ACC_P | GDT_ACC_S | GDT_ACC_X | GDT_ACC_RW | GDT_ACC_DPL(3));
 
     gdtr.limit = sizeof(gdt_entries) - 1;
     gdtr.base  = (uint64_t)&gdt_entries;
@@ -76,23 +81,22 @@ void create_tss_descriptor(struct gdt_entry* entry, uintptr_t base, uint32_t lim
 
 extern void load_tss();
 
-
 void tss_init() {
     memset(&tss, 0, sizeof(tss));
 
     // Allocate ring 0 stack for TSS (rsp0)
-    void* ring0_stack = malloc(1 * 1024 * 1024 * 1024ULL); // 64KB stack
+    void* ring0_stack = malloc(8 * 1024 * 1024); // 64KB stack
     if (!ring0_stack) {
         debug_print("Failed to allocate TSS stack\n");
     }
 
-    tss.rsp0 = (uint64_t)ring0_stack + (1 * 1024 * 1024ULL); // rsp0 points to top of stack
+    tss.rsp0 = (uint64_t)ring0_stack + (8 * 1024 * 1024ULL); // rsp0 points to top of stack
 
     // align the rsp0.
     tss.rsp0 &= ~0xFULL;
 
-    // Create TSS descriptor at GDT entry 5 (selector 0x28)
-    create_tss_descriptor(&gdt_entries[5], (uintptr_t)&tss, sizeof(tss) - 1);
+    // Create TSS descriptor at GDT entry 6
+    create_tss_descriptor(&gdt_entries[6], (uintptr_t)&tss, sizeof(tss) - 1);
 
     // Reload GDT (if needed), then load TSS
     // Assuming gdt is already loaded and selectors set correctly

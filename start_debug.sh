@@ -1,6 +1,5 @@
 #!/bin/bash
 
-# Uruchom QEMU w tle z opcją -s -S (czeka na GDB)
 qemu-system-x86_64 \
     -cpu qemu64,+fsgsbase,+syscall \
     -M smm=off \
@@ -13,8 +12,6 @@ qemu-system-x86_64 \
     -drive if=pflash,unit=1,format=raw,file=../ovmf/ovmf-vars-x86_64.fd \
     -s -S &
 
-# Poczekaj aż QEMU się uruchomi
 sleep 1
 
-# Uruchom GDB i połącz z QEMU
 gdb -x gdbinit kernel.elf

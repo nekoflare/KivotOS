@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <x86/log.h>
+#include <stdint.h>
 
 size_t strlen (const char *s) {
     size_t len = 0;

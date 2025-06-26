@@ -33,7 +33,9 @@ void acpi_discover_xsdt_tables() {
     size_t entry_count = (xsdt->sdt.length - sizeof(struct sdt)) / sizeof(uint64_t);
 
     for (size_t i = 0; i < entry_count; i++) {
-        uint64_t table_address = tables_address[i];
+        uint64_t table_address;
+        memcpy((void*)&table_address, tables_address + i, sizeof(uint64_t));
+
         void* virtual_table_address = (void*)(table_address + get_hhdm_slide());
         struct sdt* table_sdt = virtual_table_address;
 
@@ -82,20 +84,37 @@ void acpi_init() {
     acpi_discover_tables();
 }
 
-void * acpi_get_table_by_xsdt(char signature[4]) {
+static struct sdt copy_table_header_safely(void *address) {
+    struct sdt result;
+    uint8_t *src = (uint8_t *) address;
+    uint8_t *dst = (uint8_t *) &result;
+
+    for (size_t i = 0; i < sizeof(struct sdt); i++) {
+        dst[i] = src[i];
+    }
+    return result;
+}
+
+void *acpi_get_table_by_xsdt(char signature[4]) {
     if (using_xsdt) {
         size_t tables_offset = sizeof(struct xsdt);
 
-        uint64_t* tables_address = (uint64_t*)((uintptr_t)xsdt + tables_offset);
-        size_t entry_count = (xsdt->sdt.length - sizeof(struct sdt)) / sizeof(uint64_t);
+        uint64_t *tables_address = (uint64_t *) (
+            (uintptr_t) xsdt + tables_offset);
+        size_t entry_count = (xsdt->sdt.length - sizeof(struct sdt)) / sizeof(
+                                 uint64_t);
 
         for (size_t i = 0; i < entry_count; i++) {
-            uint64_t table_address = tables_address[i];
-            void* virtual_table_address = (void*)(table_address + get_hhdm_slide());
-            struct sdt* table_sdt = virtual_table_address;
+            uint64_t table_address;
+            memcpy((void *) &table_address, tables_address + i, sizeof(uint64_t));
+
+            void *virtual_table_address = (void *) (
+                table_address + get_hhdm_slide());
+            struct sdt table_sdt = copy_table_header_safely(
+                virtual_table_address);
 
             char table_signature[5];
-            memcpy(table_signature, table_sdt->signature, 4);
+            memcpy(table_signature, table_sdt.signature, 4);
             table_signature[4] = '\0';
 
             if (strcmp(table_signature, signature) == 0) {

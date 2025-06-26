@@ -4,6 +4,9 @@
 
 
 #include "gheap.h"
+
+#include <stdbool.h>
+
 #include "dlmalloc.h"
 
 #include <unistd.h>
@@ -15,6 +18,7 @@
 
 #include "physical.h"
 #include "virtual.h"
+#include <x86/interrupts_helpers.h>
 
 uint64_t heap_base = 0;
 uint64_t current_heap_size = 0;
@@ -22,18 +26,36 @@ uint64_t current_heap_size = 0;
 static struct mutex gheap_alloc_mutex = {0};
 static struct mutex gheap_mutex = {};
 
+static bool gheap_initialized = false;
+
 void* malloc(size_t n) {
+    if (!gheap_initialized) {
+        debug_log("gheap is dead my friend.\n");
+        asm volatile ("cli; hlt");
+    }
+
+    unsigned long flags = save_and_clear_if();
     lock_mutex(&gheap_alloc_mutex);
     void* ret = dlmalloc(n);
     unlock_mutex(&gheap_alloc_mutex);
+    restore_flags(flags);
+
     return ret;
 }
 
 void free(void* ptr) {
+    if (!gheap_initialized) {
+        debug_log("gheap is dead my friend.\n");
+        asm volatile ("cli; hlt");
+    }
+
+    unsigned long flags = save_and_clear_if();
     lock_mutex(&gheap_alloc_mutex);
     dlfree(ptr);
     unlock_mutex(&gheap_alloc_mutex);
+    restore_flags(flags);
 }
+
 
 void gheap_init() {
     lock_mutex(&gheap_mutex);
@@ -42,14 +64,18 @@ void gheap_init() {
         debug_print("Failed to allocate virtual heap base.\n");
         asm volatile ("cli; hlt");
     }
+    gheap_initialized = true;
     unlock_mutex(&gheap_mutex);
 }
 
 void *sbrk(ptrdiff_t increment) {
+    unsigned long flags = save_and_clear_if();
     lock_mutex(&gheap_mutex);
+
     if (increment == 0) {
         void* ret = (void*)(heap_base + current_heap_size);
         unlock_mutex(&gheap_mutex);
+        restore_flags(flags);
         return ret;
     }
 
@@ -58,21 +84,23 @@ void *sbrk(ptrdiff_t increment) {
     if (current_heap_size + increment > HEAP_SIZE) {
         debug_print("Heap size exceeds limit.\n");
         unlock_mutex(&gheap_mutex);
+        restore_flags(flags);
         asm volatile ("cli; hlt");
     }
 
     void *old_break = (void*)(heap_base + current_heap_size);
-    uint64_t phys = page_alloc_pages(increment / 4096);
+    uint64_t phys = allocate_physical_pages(increment / 4096);
 
     if (phys) {
         vmem_map(NULL, (uint64_t)old_break, phys, increment, FLAG_RW | FLAG_US);
         current_heap_size += increment;
     } else {
         for (size_t i = 0; i < increment; i += 4096) {
-            uint64_t page = page_alloc();
+            uint64_t page = allocate_physical_page();
             if (!page) {
                 debug_print("Out of physical pages in sbrk fallback.\n");
                 unlock_mutex(&gheap_mutex);
+                restore_flags(flags);
                 asm volatile ("cli; hlt");
             }
 
@@ -82,13 +110,14 @@ void *sbrk(ptrdiff_t increment) {
     }
 
     unlock_mutex(&gheap_mutex);
+    restore_flags(flags);
     return old_break;
 }
 
 long sysconf(int name) {
     switch (name) {
         case _SC_AVPHYS_PAGES: {
-            uint64_t available_physical_memory = pmem_get_usable_memory_count();
+            uint64_t available_physical_memory = get_physical_usable_memory_count();
             return (long)(available_physical_memory / 4096);
         }
         case _SC_PAGE_SIZE:
@@ -126,7 +155,7 @@ extern void *mmap(void *__addr, size_t __len, int __prot,
 
     size_t num_pages = aligned_size / 4096;
     for (size_t i = 0; i < num_pages; i++) {
-        uint64_t page = page_alloc();
+        uint64_t page = allocate_physical_page();
         if (!page) {
             debug_print("mmap: out of physical memory.\n");
             unlock_mutex(&gheap_mutex);
